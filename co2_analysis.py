@@ -203,6 +203,27 @@ print(f"CO2-vs-GDP elasticity : {elasticity:.2f}  (≈ %{elasticity*100:.0f} CO2
 # - Population matters less than GDP (r ≈ 0.67): richer, not just bigger, countries emit more.
 # - On the composition side, **coal is still the single largest source** of global emissions,
 #   with gas and cement growing fastest since 1990.
+# #### 2b. Has anyone *decoupled* yet? — GDP up, CO₂ down
+#
+# The GDP↔CO₂ correlation looks inseparable, but it's a cross-sectional snapshot — it does not
+# prove growth *requires* emissions. The decisive test is decoupling: do any countries grow their
+# economy while *cutting* CO₂? Over 2010→2022, 37 of 97 sizeable economies did, and global carbon
+# intensity fell ~32% (CO₂ per $ of GDP, 2000→2022). The transition is already underway.
+
+d = (countries[countries.year.isin([2010, 2022])]
+     .dropna(subset=["gdp", "co2"])
+     .pivot(index="country", columns="year", values=["gdp", "co2"]))
+d.columns = [f"{m}_{y}" for m, y in d.columns]
+d = d[d["gdp_2010"] > 5e10].copy()
+d["gdp_growth_%"] = d.gdp_2022 / d.gdp_2010 - 1
+d["co2_growth_%"] = d.co2_2022 / d.co2_2010 - 1
+decoupled = d[(d["gdp_growth_%"] > 0.05) & (d["co2_growth_%"] < 0)].sort_values("gdp_growth_%", ascending=False)
+print(f"Tracked economies 2010-2022        : {len(d)}")
+print(f"Absolute decouplers (GDP>5%, CO2<0): {len(decoupled)}")
+print(decoupled[["gdp_growth_%", "co2_growth_%"]].head(12).mul(100).round(1).to_string())
+g0, c0 = float(world[world.year == 2000].gdp.iloc[0]), float(world[world.year == 2000].co2.iloc[0])
+g1, c1 = float(world[world.year == 2022].gdp.iloc[0]), float(world[world.year == 2022].co2.iloc[0])
+print(f"World carbon intensity: {c0/g0*1e9:.1f} -> {c1/g1*1e9:.1f} t CO2 per $1M GDP ({(c1/g1)/(c0/g0)-1:+.0%})")
 
 # ---
 # ## 🟢 3. Predictive analysis — *What will happen?*
@@ -239,6 +260,26 @@ print(f"Model R^2      : {r2:.3f}")
 print(f"Learned slope  : {model.coef_[0]:,.1f} Mt per year")
 print(f"Projected 2030 : {model.predict([[2030]])[0]:,.0f} Mt")
 print(f"Projected 2035 : {forecast[-1]:,.0f} Mt  ({(forecast[-1]/y[-1]-1)*100:+.0f}% vs 2024)")
+# #### 3b. Is the straight line hiding a slowdown?
+#
+# One line across 2000-2024 blends two eras. Growth fell from +820 Mt/yr (2000-2012) to
+# +271 Mt/yr (2012-2024); the blended fit (+526 Mt/yr) is dragged up by the fast 2000s and
+# over-projects 2035. A recent-decade fit is the more defensible baseline.
+
+def slope(yr0, yr1):
+    seg = world[(world.year >= yr0) & (world.year <= yr1)].dropna(subset=["co2"])
+    m = LinearRegression().fit(seg[["year"]], seg["co2"])
+    return m.coef_[0], len(seg)
+
+print("Slope by window:")
+for a, b in [(2000, 2012), (2012, 2024), (2000, 2024)]:
+    s, n = slope(a, b)
+    print(f"  {a}-{b} (n={n:>2}): +{s:,.0f} Mt/yr")
+
+seg = world[(world.year >= 2012) & (world.year <= 2024)].dropna(subset=["co2"])
+m_recent = LinearRegression().fit(seg[["year"]], seg["co2"])
+print(f"2035 projection  | recent-decade fit: {m_recent.predict([[2035]])[0]:,.0f} Mt")
+print(f"                 | blended 2000-2024 : {model.predict([[2035]])[0]:,.0f} Mt")
 
 # ---
 # ## 🟣 4. Prescriptive analysis — *What should we do?*
@@ -279,6 +320,21 @@ plt.tight_layout(); plt.show()
 print(f"2024 baseline                      : {base_2024:,.0f} Mt")
 print(f"Business-as-usual 2035             : {bau_2035:,.0f} Mt  ({(bau_2035/base_2024-1)*100:+.0f}% vs 2024)")
 print(f"Halve by 2035 requires             : {halve_rate:+.2f}%/yr every year to 2035")
+# #### 4b. Whose cut is it anyway? — current vs. historical responsibility
+#
+# A flat global reduction rate is politically inert. Cumulative (historical) CO₂ puts the US first
+# (~24%), ahead of China (~16%) — the opposite of today's annual ranking. Top-10 nations = ~70% of
+# all-time emissions; a fair-share path weights each cut against both current and historical share.
+
+latest_cum = (countries.sort_values("year", ascending=False)
+              .drop_duplicates("country", keep="first")
+              .dropna(subset=["cumulative_co2"]))
+total = latest_cum["cumulative_co2"].sum()
+top10 = latest_cum.nlargest(10, "cumulative_co2")[["country", "cumulative_co2"]]
+out = top10.assign(share_pct=top10.cumulative_co2 / total * 100)
+print(f"World cumulative CO2 (sum of countries): {total:,.0f} Mt  (~{total/1000:,.0f} Gt)")
+print(out.round({"cumulative_co2": 0, "share_pct": 1}).to_string(index=False))
+print(f"Top-10 combined share: {top10['cumulative_co2'].sum()/total*100:.1f}%")
 
 # ---
 # ## Key findings & recap
@@ -302,3 +358,37 @@ print(f"Halve by 2035 requires             : {halve_rate:+.2f}%/yr every year to
 # **Bottom line:** the four analytics types form a ladder — *describe → explain → forecast →
 # act*. Each rung builds on the previous one's evidence, turning raw history into an
 # actionable recommendation.
+#
+# ---
+# ## 🔎 Deeper findings (added analysis)
+#
+# - **Decoupling is real and already happening.** 37 of 97 economies grew GDP >5% while cutting
+#   CO₂ (2010-2022) — incl. the United States (+28% GDP, -11% CO₂). Global carbon intensity fell
+#   ~32% (CO₂ per $ of GDP, 2000-2022). Growth and emissions are not inseparable.
+# - **The naive linear forecast over-projects.** Growth slowed from +820 Mt/yr (2000-2012) to
+#   +271 Mt/yr (2012-2024); the blended 2000-2024 fit inherits the fast 2000s and over-states 2035.
+# - **Responsibility is not symmetric.** Cumulative CO₂ puts the US first (~24%), ahead of China
+#   (~16%) — the reverse of today's annual ranking. Replace a flat global -6%/yr with fair-share cuts.
+#
+# ---
+# ## 🎯 How to reduce / fix this — data-backed recommendations
+#
+# The four analyses above don't just describe the problem — they point at levers. Every recommendation
+# below is tied to a number this script computed from the OWID data.
+#
+# 1. **Phase out coal first.** Coal is 40.9% of 2024 emissions — the single largest source. Removing
+#    1 Gt of coal CO₂ cuts ~2.6% off the global total: the biggest bang per unit of effort.
+# 2. **Target the *rising* sources (cement & gas).** Cement +199% and gas +111% since 1990 are the
+#    growing slices — industrial policy (CCS, green cement, electrified heat) stops the leak, not just
+#    the biggest pool.
+# 3. **Replicate the decouplers.** 37 countries grew GDP while cutting CO₂ (2010-2022): the US +28%
+#    GDP / -11% CO₂, Czechia -19%, Romania -13%. Global carbon intensity already fell -32%.
+#    Decoupling is proven — copy the playbook (renewables, efficiency, electrification).
+# 4. **Differentiate responsibility.** Top-10 nations hold ~70% of all-time CO₂ (US 24%, China 16%).
+#    Weight cuts by both current AND historical emissions, not a flat global rate.
+# 5. **Accelerate the bend.** Growth already slowed +820 -> +271 Mt/yr (2000-12 vs 2012-24); the curve
+#    is bending. Halving by 2035 needs -6.1%/yr every single year.
+#
+# **Bottom line:** the fix is not mystery technology — it is coal first, then the fast-rising
+# industrial sources, copying the 37 countries that already decoupled, with the largest historical
+# emitters carrying the largest share, accelerated to hold ~-6%/yr.
